@@ -1,9 +1,11 @@
 package com.github.h3yow.sagacoordinatorjava.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.github.h3yow.sagacoordinatorjava.coordinator.AdmissionController;
 import com.github.h3yow.sagacoordinatorjava.coordinator.RecoveryService;
 import com.github.h3yow.sagacoordinatorjava.coordinator.SagaCoordinator;
 import com.github.h3yow.sagacoordinatorjava.coordinator.TransactionLockManager;
+import com.github.h3yow.sagacoordinatorjava.coordinator.TransactionQueryService;
 import com.github.h3yow.sagacoordinatorjava.saga.SagaRegistry;
 import com.github.h3yow.sagacoordinatorjava.store.FileTransactionStore;
 import com.github.h3yow.sagacoordinatorjava.store.TransactionStore;
@@ -38,13 +40,26 @@ public class SagaConfiguration {
     }
 
     @Bean
+    public AdmissionController admissionController(SagaProperties properties) {
+        return new AdmissionController(properties.getMaxConcurrentTransactions(),
+                properties.getAdmissionQueueTimeoutMillis());
+    }
+
+    @Bean
     public SagaCoordinator sagaCoordinator(TransactionStore store, SagaRegistry registry,
                                            TransactionLockManager lockManager,
+                                           AdmissionController admissionController,
                                            SagaProperties properties) {
         return new SagaCoordinator(store, registry, lockManager,
                 properties.getStepTimeoutMillis(),
                 properties.getTransactionTimeoutMillis(),
-                properties.getCompensationMaxRetries());
+                properties.getCompensationMaxRetries(),
+                admissionController);
+    }
+
+    @Bean
+    public TransactionQueryService transactionQueryService(TransactionStore store) {
+        return new TransactionQueryService(store);
     }
 
     @Bean

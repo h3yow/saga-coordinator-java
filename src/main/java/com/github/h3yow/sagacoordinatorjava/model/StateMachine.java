@@ -22,9 +22,13 @@ public final class StateMachine {
                     TransactionStatus.TIMEOUT_COMPENSATING),
             TransactionStatus.TIMEOUT_COMPENSATING, Set.of(
                     TransactionStatus.TIMED_OUT_COMPENSATED,
-                    TransactionStatus.COMPENSATION_FAILED)
+                    TransactionStatus.COMPENSATION_FAILED),
+            // 人工介入：补偿未收敛的事务可被重试补偿，或被显式标记为人工已完结
+            TransactionStatus.COMPENSATION_FAILED, Set.of(
+                    TransactionStatus.COMPENSATING,
+                    TransactionStatus.MANUALLY_RESOLVED)
             // 终态 COMPLETED / COMPENSATED / FAILED /
-            // COMPENSATION_FAILED / TIMED_OUT_COMPENSATED 无后续迁移
+            // MANUALLY_RESOLVED / TIMED_OUT_COMPENSATED 无后续迁移
     );
 
     private static final Map<StepStatus, Set<StepStatus>> STEP_ALLOWED = Map.of(
@@ -64,6 +68,7 @@ public final class StateMachine {
                 || status == TransactionStatus.COMPENSATED
                 || status == TransactionStatus.FAILED
                 || status == TransactionStatus.COMPENSATION_FAILED
-                || status == TransactionStatus.TIMED_OUT_COMPENSATED;
+                || status == TransactionStatus.TIMED_OUT_COMPENSATED
+                || status == TransactionStatus.MANUALLY_RESOLVED;
     }
 }

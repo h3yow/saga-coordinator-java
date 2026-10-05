@@ -19,6 +19,7 @@ public class SagaTransaction {
     private long updatedAt;
     private long deadlineAt;
     private int compensationRetries;
+    private int interventionCount;
     private List<StepRecord> steps = new ArrayList<>();
     private List<TransactionEvent> events = new ArrayList<>();
 
@@ -100,6 +101,14 @@ public class SagaTransaction {
 
     public void setCompensationRetries(int compensationRetries) {
         this.compensationRetries = compensationRetries;
+    }
+
+    public int getInterventionCount() {
+        return interventionCount;
+    }
+
+    public void setInterventionCount(int interventionCount) {
+        this.interventionCount = interventionCount;
     }
 
     public List<StepRecord> getSteps() {

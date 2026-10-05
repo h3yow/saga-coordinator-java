@@ -20,6 +20,12 @@ public class SagaProperties {
     /** 补偿最大重试次数 */
     private int compensationMaxRetries = 3;
 
+    /** 同一时间正在推进的事务数量上限，0 表示不限制 */
+    private int maxConcurrentTransactions = 100;
+
+    /** 超出推进上限后的排队等待时间（毫秒），超时仍未获得许可则拒绝 */
+    private long admissionQueueTimeoutMillis = 5000;
+
     public String getStoreDir() {
         return storeDir;
     }
@@ -50,5 +56,21 @@ public class SagaProperties {
 
     public void setCompensationMaxRetries(int compensationMaxRetries) {
         this.compensationMaxRetries = compensationMaxRetries;
+    }
+
+    public int getMaxConcurrentTransactions() {
+        return maxConcurrentTransactions;
+    }
+
+    public void setMaxConcurrentTransactions(int maxConcurrentTransactions) {
+        this.maxConcurrentTransactions = maxConcurrentTransactions;
+    }
+
+    public long getAdmissionQueueTimeoutMillis() {
+        return admissionQueueTimeoutMillis;
+    }
+
+    public void setAdmissionQueueTimeoutMillis(long admissionQueueTimeoutMillis) {
+        this.admissionQueueTimeoutMillis = admissionQueueTimeoutMillis;
     }
 }

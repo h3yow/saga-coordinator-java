@@ -45,4 +45,18 @@ public final class TestSagaFactory {
         return new SagaCoordinator(store, registry, new TransactionLockManager(),
                 stepTimeoutMillis, txTimeoutMillis, compensationMaxRetries);
     }
+
+    public static SagaCoordinator newCoordinator(Path storeDir,
+                                                  long stepTimeoutMillis,
+                                                  long txTimeoutMillis,
+                                                  int compensationMaxRetries,
+                                                  int maxConcurrentTransactions,
+                                                  long admissionQueueTimeoutMillis) {
+        FileTransactionStore store = new FileTransactionStore(storeDir, new ObjectMapper());
+        SagaRegistry registry = new SagaRegistry();
+        return new SagaCoordinator(store, registry, new TransactionLockManager(),
+                stepTimeoutMillis, txTimeoutMillis, compensationMaxRetries,
+                new com.github.h3yow.sagacoordinatorjava.coordinator.AdmissionController(
+                        maxConcurrentTransactions, admissionQueueTimeoutMillis));
+    }
 }

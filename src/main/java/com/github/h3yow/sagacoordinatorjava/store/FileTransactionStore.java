@@ -116,4 +116,22 @@ public class FileTransactionStore implements TransactionStore {
         }
         return result;
     }
+
+    @Override
+    public void forEach(java.util.function.Consumer<SagaTransaction> consumer) {
+        try (Stream<Path> stream = Files.list(dir)) {
+            stream.filter(p -> p.getFileName().toString().startsWith("tx-")
+                            && p.getFileName().toString().endsWith(".json"))
+                    .forEach(p -> {
+                        try {
+                            // 逐条读取、逐条交给调用方处理，不在此处累积列表
+                            consumer.accept(objectMapper.readValue(Files.readString(p), SagaTransaction.class));
+                        } catch (IOException e) {
+                            throw new UncheckedIOException("read failed: " + p, e);
+                        }
+                    });
+        } catch (IOException e) {
+            throw new UncheckedIOException("list failed: " + dir, e);
+        }
+    }
 }

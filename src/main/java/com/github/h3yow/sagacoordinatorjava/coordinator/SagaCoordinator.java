@@ -2,6 +2,7 @@ package com.github.h3yow.sagacoordinatorjava.coordinator;
 
 import com.github.h3yow.sagacoordinatorjava.model.EventType;
 import com.github.h3yow.sagacoordinatorjava.model.FailureReason;
+import com.github.h3yow.sagacoordinatorjava.model.InterventionAction;
 import com.github.h3yow.sagacoordinatorjava.model.SagaDefinition;
 import com.github.h3yow.sagacoordinatorjava.model.SagaStepDefinition;
 import com.github.h3yow.sagacoordinatorjava.model.SagaTransaction;
@@ -44,23 +45,37 @@ public class SagaCoordinator {
     private final long stepTimeoutMillis;
     private final long transactionTimeoutMillis;
     private final int compensationMaxRetries;
+    private final AdmissionController admission;
     private final ExecutorService stepExecutor;
 
     public SagaCoordinator(TransactionStore store, SagaRegistry registry,
                            TransactionLockManager lockManager,
                            long stepTimeoutMillis, long transactionTimeoutMillis,
                            int compensationMaxRetries) {
+        this(store, registry, lockManager, stepTimeoutMillis, transactionTimeoutMillis,
+                compensationMaxRetries, new AdmissionController(0, 0));
+    }
+
+    public SagaCoordinator(TransactionStore store, SagaRegistry registry,
+                           TransactionLockManager lockManager,
+                           long stepTimeoutMillis, long transactionTimeoutMillis,
+                           int compensationMaxRetries, AdmissionController admission) {
         this.store = store;
         this.registry = registry;
         this.lockManager = lockManager;
         this.stepTimeoutMillis = stepTimeoutMillis;
         this.transactionTimeoutMillis = transactionTimeoutMillis;
         this.compensationMaxRetries = compensationMaxRetries;
+        this.admission = admission;
         ThreadFactory tf = r -> {
             Thread t = new Thread(r, "saga-step-executor");
             t.setDaemon(true);
             return t;
         };
+        // 容量约束由 AdmissionController 承担（同时在推进的事务数有界，
+        // 因而同时新发起的步骤调用也有界）。步骤线程池保持按需创建：
+        // 挂起且无视中断的参与者会泄漏其执行线程，任何池都无法回收，
+        // 有界池反而会让后续事务的步骤排在泄漏线程后面被误伤
         this.stepExecutor = Executors.newCachedThreadPool(tf);
     }
 
@@ -84,19 +99,24 @@ public class SagaCoordinator {
         ReentrantLock lock = lockManager.get(transactionId);
         lock.lock();
         try {
-            Optional<SagaTransaction> existing = store.find(transactionId);
-            SagaTransaction tx;
-            if (existing.isPresent()) {
-                tx = existing.get();
-                log.info("tx={} duplicate submit, currentStatus={} (no new business effect)",
-                        transactionId, tx.getStatus());
-            } else {
-                tx = createTransaction(definition, transactionId);
-                store.createIfAbsent(tx);
-                log.info("tx={} created, sagaType={}, steps={}",
-                        transactionId, definition.getType(), definition.getSteps().size());
+            admission.acquire(transactionId);
+            try {
+                Optional<SagaTransaction> existing = store.find(transactionId);
+                SagaTransaction tx;
+                if (existing.isPresent()) {
+                    tx = existing.get();
+                    log.info("tx={} duplicate submit, currentStatus={} (no new business effect)",
+                            transactionId, tx.getStatus());
+                } else {
+                    tx = createTransaction(definition, transactionId);
+                    store.createIfAbsent(tx);
+                    log.info("tx={} created, sagaType={}, steps={}",
+                            transactionId, definition.getType(), definition.getSteps().size());
+                }
+                return drive(tx);
+            } finally {
+                admission.release();
             }
-            return drive(tx);
         } finally {
             lock.unlock();
         }
@@ -109,13 +129,18 @@ public class SagaCoordinator {
         ReentrantLock lock = lockManager.get(transactionId);
         lock.lock();
         try {
-            SagaTransaction tx = store.find(transactionId)
-                    .orElseThrow(() -> new IllegalArgumentException("transaction not found: " + transactionId));
-            addEvent(tx, EventType.RECOVERY_RESUMED, null,
-                    "resume from status " + tx.getStatus());
-            store.save(tx);
-            log.info("tx={} recovery resumed from status={}", transactionId, tx.getStatus());
-            return drive(tx);
+            admission.acquire(transactionId);
+            try {
+                SagaTransaction tx = store.find(transactionId)
+                        .orElseThrow(() -> new IllegalArgumentException("transaction not found: " + transactionId));
+                addEvent(tx, EventType.RECOVERY_RESUMED, null,
+                        "resume from status " + tx.getStatus());
+                store.save(tx);
+                log.info("tx={} recovery resumed from status={}", transactionId, tx.getStatus());
+                return drive(tx);
+            } finally {
+                admission.release();
+            }
         } finally {
             lock.unlock();
         }
@@ -123,6 +148,82 @@ public class SagaCoordinator {
 
     public Optional<TransactionResult> getResult(String transactionId) {
         return store.find(transactionId).map(this::toResult);
+    }
+
+    // ------------------------------------------------------------------
+    // 人工介入处置
+    // ------------------------------------------------------------------
+
+    /**
+     * 对自动收敛不了的事务发起人工处置。
+     *
+     * <p>只允许处置 {@link TransactionStatus#COMPENSATION_FAILED}（待人工处理）的事务；
+     * 已标记 {@link TransactionStatus#MANUALLY_RESOLVED} 的事务重复
+     * {@link InterventionAction#MARK_RESOLVED} 幂等返回同一结论。
+     * 其它状态（仍在推进、或已有最终结论）一律拒绝。
+     * 处置过程与结论随事务落盘，重启后不漂移。
+     */
+    public TransactionResult intervene(String transactionId, InterventionAction action) {
+        ReentrantLock lock = lockManager.get(transactionId);
+        // 锁被持有说明该事务正在被推进（如参与者调用长时间不返回）：
+        // 此时"本不该再动"，立即拒绝而不是无限等待
+        if (!lock.tryLock()) {
+            throw new InterventionRejectedException("tx=" + transactionId
+                    + " is currently being driven, intervention rejected");
+        }
+        try {
+            SagaTransaction tx = store.find(transactionId)
+                    .orElseThrow(() -> new InterventionRejectedException(
+                            "transaction not found: " + transactionId));
+            return switch (action) {
+                case MARK_RESOLVED -> markResolved(tx);
+                case RETRY_COMPENSATION -> retryCompensation(tx);
+            };
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private TransactionResult markResolved(SagaTransaction tx) {
+        if (tx.getStatus() == TransactionStatus.MANUALLY_RESOLVED) {
+            // 幂等：重复标记不再改写状态，返回同一个结论
+            log.info("tx={} already MANUALLY_RESOLVED, idempotent no-op", tx.getTransactionId());
+            return toResult(tx);
+        }
+        if (tx.getStatus() != TransactionStatus.COMPENSATION_FAILED) {
+            throw new InterventionRejectedException("tx=" + tx.getTransactionId()
+                    + " status=" + tx.getStatus() + " cannot be marked resolved;"
+                    + " only COMPENSATION_FAILED is eligible");
+        }
+        tx.setInterventionCount(tx.getInterventionCount() + 1);
+        addEvent(tx, EventType.MANUAL_INTERVENTION, null,
+                "marked resolved by operator (intervention #" + tx.getInterventionCount() + ")");
+        transitionTx(tx, TransactionStatus.MANUALLY_RESOLVED);
+        store.save(tx);
+        log.info("tx={} MANUALLY_RESOLVED by operator intervention", tx.getTransactionId());
+        return toResult(tx);
+    }
+
+    private TransactionResult retryCompensation(SagaTransaction tx) {
+        if (tx.getStatus() != TransactionStatus.COMPENSATION_FAILED) {
+            throw new InterventionRejectedException("tx=" + tx.getTransactionId()
+                    + " status=" + tx.getStatus() + " cannot retry compensation;"
+                    + " only COMPENSATION_FAILED is eligible");
+        }
+        admission.acquire(tx.getTransactionId());
+        try {
+            tx.setInterventionCount(tx.getInterventionCount() + 1);
+            addEvent(tx, EventType.MANUAL_INTERVENTION, null,
+                    "retry compensation by operator (intervention #" + tx.getInterventionCount() + ")");
+            transitionTx(tx, TransactionStatus.COMPENSATING);
+            store.save(tx);
+            log.info("tx={} operator retried compensation", tx.getTransactionId());
+            SagaDefinition<Object> definition = resolveDefinition(tx);
+            runCompensation(tx, definition);
+            return toResult(tx);
+        } finally {
+            admission.release();
+        }
     }
 
     // ------------------------------------------------------------------
@@ -311,11 +412,21 @@ public class SagaCoordinator {
             if (StateMachine.isTerminal(tx.getStatus())) {
                 return;
             }
-            SagaDefinition<Object> definition = resolveDefinition(tx);
-            addEvent(tx, EventType.RECOVERY_TIMEOUT, null,
-                    "swept at " + System.currentTimeMillis());
-            markTimeoutAndCompensate(tx, definition,
-                    "no progress before transaction timeout " + tx.getDeadlineAt());
+            // 巡检不排队：拿不到准入许可就跳过本轮，下轮巡检再收敛，
+            // 避免巡检线程在容量占满时堆积
+            if (!admission.tryAcquire()) {
+                log.warn("tx={} admission full, timeout sweep deferred to next round", transactionId);
+                return;
+            }
+            try {
+                SagaDefinition<Object> definition = resolveDefinition(tx);
+                addEvent(tx, EventType.RECOVERY_TIMEOUT, null,
+                        "swept at " + System.currentTimeMillis());
+                markTimeoutAndCompensate(tx, definition,
+                        "no progress before transaction timeout " + tx.getDeadlineAt());
+            } finally {
+                admission.release();
+            }
         } finally {
             lock.unlock();
         }
