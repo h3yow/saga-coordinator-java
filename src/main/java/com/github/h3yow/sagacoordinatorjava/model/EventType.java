@@ -14,5 +14,9 @@ public enum EventType {
     STEP_COMPENSATED,
     STEP_COMPENSATION_FAILED,
     RECOVERY_RESUMED,
-    RECOVERY_TIMEOUT
+    RECOVERY_TIMEOUT,
+    /** 运维手动再试一次补偿（仅 COMPENSATION_FAILED 事务可发起）。 */
+    MANUAL_RETRY_REQUESTED,
+    /** 运维显式确认事务残留效果已人工处理完毕。 */
+    MANUALLY_RESOLVED
 }

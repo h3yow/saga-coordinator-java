@@ -1,7 +1,12 @@
 package com.github.h3yow.sagacoordinatorjava.store;
 
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonToken;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.github.h3yow.sagacoordinatorjava.model.FailureReason;
 import com.github.h3yow.sagacoordinatorjava.model.SagaTransaction;
+import com.github.h3yow.sagacoordinatorjava.model.TransactionStatus;
+import com.github.h3yow.sagacoordinatorjava.model.TransactionSummary;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -11,8 +16,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Consumer;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -115,5 +122,68 @@ public class FileTransactionStore implements TransactionStore {
             throw new UncheckedIOException("list failed: " + dir, e);
         }
         return result;
+    }
+
+    @Override
+    public void scanSummaries(Consumer<TransactionSummary> consumer) {
+        // 流式逐个文件、逐字段读取：任意时刻只持有一条摘要，
+        // 不解析 steps / events 数组，上千条事务也不会把内存顶高。
+        try (Stream<Path> stream = Files.list(dir)) {
+            List<Path> files = stream
+                    .filter(p -> {
+                        String name = p.getFileName().toString();
+                        return name.startsWith("tx-") && name.endsWith(".json");
+                    })
+                    .sorted(Comparator.comparing(p -> p.getFileName().toString()))
+                    .toList();
+            for (Path file : files) {
+                try {
+                    consumer.accept(readSummary(file));
+                } catch (IOException e) {
+                    throw new UncheckedIOException("read summary failed: " + file, e);
+                }
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException("scan failed: " + dir, e);
+        }
+    }
+
+    /**
+     * 只解析事务 JSON 顶层的摘要字段；遇到 steps / events 数组直接整体跳过，
+     * 避免把可能很长的事件轨迹读入内存。
+     */
+    private TransactionSummary readSummary(Path file) throws IOException {
+        TransactionSummary summary = new TransactionSummary();
+        try (JsonParser parser = objectMapper.getFactory().createParser(file.toFile())) {
+            if (parser.nextToken() != JsonToken.START_OBJECT) {
+                throw new IOException("unexpected json root in " + file);
+            }
+            while (parser.nextToken() != JsonToken.END_OBJECT) {
+                String field = parser.currentName();
+                JsonToken token = parser.nextToken();
+                if (token == JsonToken.START_ARRAY || token == JsonToken.START_OBJECT) {
+                    parser.skipChildren();
+                    continue;
+                }
+                switch (field) {
+                    case "transactionId" -> summary.setTransactionId(parser.getValueAsString());
+                    case "sagaType" -> summary.setSagaType(parser.getValueAsString());
+                    case "status" -> summary.setStatus(TransactionStatus.valueOf(parser.getValueAsString()));
+                    case "failureReason" -> {
+                        String reason = parser.getValueAsString();
+                        if (reason != null) {
+                            summary.setFailureReason(FailureReason.valueOf(reason));
+                        }
+                    }
+                    case "failureDetail" -> summary.setFailureDetail(parser.getValueAsString());
+                    case "createdAt" -> summary.setCreatedAt(parser.getLongValue());
+                    case "updatedAt" -> summary.setUpdatedAt(parser.getLongValue());
+                    default -> {
+                        // 其它标量字段（deadlineAt / attempts ...）与摘要无关，忽略
+                    }
+                }
+            }
+        }
+        return summary;
     }
 }

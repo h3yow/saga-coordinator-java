@@ -19,6 +19,10 @@ public class SagaTransaction {
     private long updatedAt;
     private long deadlineAt;
     private int compensationRetries;
+    /** 人工发起"再试一次补偿"的次数（审计用，旧数据缺失时为 0）。 */
+    private int manualRetryCount;
+    /** 人工确认处理完毕时记录的处置说明（可为空）。 */
+    private String manualResolutionNote;
     private List<StepRecord> steps = new ArrayList<>();
     private List<TransactionEvent> events = new ArrayList<>();
 
@@ -100,6 +104,22 @@ public class SagaTransaction {
 
     public void setCompensationRetries(int compensationRetries) {
         this.compensationRetries = compensationRetries;
+    }
+
+    public int getManualRetryCount() {
+        return manualRetryCount;
+    }
+
+    public void setManualRetryCount(int manualRetryCount) {
+        this.manualRetryCount = manualRetryCount;
+    }
+
+    public String getManualResolutionNote() {
+        return manualResolutionNote;
+    }
+
+    public void setManualResolutionNote(String manualResolutionNote) {
+        this.manualResolutionNote = manualResolutionNote;
     }
 
     public List<StepRecord> getSteps() {

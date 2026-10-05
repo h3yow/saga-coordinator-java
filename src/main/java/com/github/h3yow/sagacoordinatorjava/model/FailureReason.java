@@ -8,5 +8,7 @@ public enum FailureReason {
     STEP_FAILED,
     STEP_TIMEOUT,
     COMPENSATION_FAILED,
-    TRANSACTION_TIMEOUT
+    TRANSACTION_TIMEOUT,
+    /** 已由运维人工处理完毕（对应终态 MANUALLY_RESOLVED）。 */
+    MANUALLY_RESOLVED
 }

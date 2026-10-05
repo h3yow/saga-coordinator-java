@@ -1,6 +1,7 @@
 package com.github.h3yow.sagacoordinatorjava.tests.support;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.github.h3yow.sagacoordinatorjava.coordinator.ConcurrencyLimiter;
 import com.github.h3yow.sagacoordinatorjava.coordinator.SagaCoordinator;
 import com.github.h3yow.sagacoordinatorjava.coordinator.TransactionLockManager;
 import com.github.h3yow.sagacoordinatorjava.model.SagaDefinition;
@@ -40,9 +41,18 @@ public final class TestSagaFactory {
                                                   long stepTimeoutMillis,
                                                   long txTimeoutMillis,
                                                   int compensationMaxRetries) {
+        return newCoordinator(storeDir, stepTimeoutMillis, txTimeoutMillis,
+                compensationMaxRetries, ConcurrencyLimiter.unlimited());
+    }
+
+    public static SagaCoordinator newCoordinator(Path storeDir,
+                                                  long stepTimeoutMillis,
+                                                  long txTimeoutMillis,
+                                                  int compensationMaxRetries,
+                                                  ConcurrencyLimiter limiter) {
         FileTransactionStore store = new FileTransactionStore(storeDir, new ObjectMapper());
         SagaRegistry registry = new SagaRegistry();
         return new SagaCoordinator(store, registry, new TransactionLockManager(),
-                stepTimeoutMillis, txTimeoutMillis, compensationMaxRetries);
+                stepTimeoutMillis, txTimeoutMillis, compensationMaxRetries, limiter);
     }
 }

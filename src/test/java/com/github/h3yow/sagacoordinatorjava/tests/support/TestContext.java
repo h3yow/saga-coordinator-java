@@ -20,10 +20,25 @@ public class TestContext {
     public volatile String compensationFailStep = null;
     public volatile String slowStep = null;
     public volatile long slowMillis = 0;
+    /** 设置后，该步骤的正向调用进入后在 gate 上等待（可被释放 / 中断），并在进入时放行 entered。 */
+    public volatile String hangStep = null;
+    public final java.util.concurrent.CountDownLatch hangEntered =
+            new java.util.concurrent.CountDownLatch(1);
+    public volatile java.util.concurrent.CountDownLatch hangGate =
+            new java.util.concurrent.CountDownLatch(1);
 
     public void execute(String step) {
         executeCalls.merge(step, 1, Integer::sum);
         executedSteps.add(step);
+        if (hangStep != null && hangStep.equals(step)) {
+            hangEntered.countDown();
+            try {
+                // 默认永久等待；测试通过 countDown hangGate 或 shutdownNow 中断来放行
+                hangGate.await(60, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
         if (slowStep != null && slowStep.equals(step) && slowMillis > 0) {
             try {
                 Thread.sleep(slowMillis);
